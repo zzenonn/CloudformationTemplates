@@ -1,0 +1,637 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  This template contains a
+  deployment process for  
+  Lambda functions and API gateways.
+
+# This template creates:
+#   Code Build Project
+#   Codepipeline
+#   IAM Role for Pipeline execution
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: General Details
+        Parameters:
+          - ProjectName
+          - StageDocsBucket
+          - DevDocsBucket
+          - BuildArtifactsBucket
+      - Label:
+          default: Infrastructure Pipeline Configuration
+        Parameters:
+          - ServiceName
+          - PipelineDeployRole
+          - GitRepo
+          - MasterBranchName
+          - StagingBranchName
+          - TestingBranchName
+          - DevelopBranchName
+          - NotificationEmail
+          - CodeBuildComputeType
+          - BuildFramework
+
+    ParameterLabels:
+      ProjectName:
+        default: "Project Name"
+      ServiceName:
+        default: "Service Name"
+      PipelineDeployRole:
+        default: "Pipeline's Deploy Role"
+      GitRepo:
+        default: "Pipeline's Git Repository"
+      NotificationEmail:
+        default: "Email for Deployment Notifications"
+      MasterBranchName:
+        default: "Git Branch for production"
+      StagingBranchName:
+        default: "Git branch for staging"
+      TestingBranchName:
+        default: "Git branch for testing"
+      DevelopBranchName:
+        default: "Git Branch for develop"
+      BuildFramework:
+        default: "Programming language or framework"
+      CodeBuildComputeType:
+        default: "Codebuild Environment Compute Type"
+
+Parameters:
+  # So that the pipeline can be used in other projects
+  ProjectName:
+    Description: Project Name to identify stack and infrastructure
+    Type: String
+
+  ServiceName:
+    Description: Service Name to identify stack and infrastructure
+    Type: String
+
+  BuildArtifactsBucket:
+    Description: Bucket for build artifacts
+    Type: String
+
+  PipelineDeployRole:
+    Type: String
+    Description: ARN of IAM Role to use for Deploy Stage
+
+  GitRepo:
+    Type: String
+    Description: Git Repository where the application code is stored
+
+  MasterBranchName:
+    Description: Enter the GitHub branch to monitored
+    Type: String
+    Default: master
+
+  StagingBranchName:
+    Description: Enter Git branch to be monitored
+    Type: String
+    Default: staging
+
+  TestingBranchName:
+    Description: Enter Git branch to be monitored
+    Type: String
+    Default: testing
+
+  DevelopBranchName:
+    Description: Enter the GitHub branch to monitored
+    Type: String
+    Default: develop
+
+  NotificationEmail:
+    Type: String
+    AllowedPattern: "^[\\x20-\\x45]?[\\w-\\+]+(\\.[\\w]+)*@[\\w-]+(\\.[\\w]+)*(\\.[a-z]{2,})$"
+    ConstraintDescription: "Must be a valid email address"
+    Description: Email for deployment updates
+
+  DevDocsBucket:
+    Type: String
+    Description: Bucket for all the docs
+
+  StageDocsBucket:
+    Type: String
+    Description: Bucket for all the docs
+
+  CodeBuildComputeType:
+    Description: "Codebuild Compute Type"
+    Type: String
+    AllowedValues:
+      - BUILD_GENERAL1_SMALL
+      - BUILD_GENERAL1_MEDIUM
+      - BUILD_GENERAL1_LARGE
+    Default: BUILD_GENERAL1_SMALL
+
+  BuildFramework:
+    Type: String
+    AllowedValues:
+      - golang
+      - java
+      - nodejs8.11.0
+      - nodejs10.14.1
+      - python
+      - ruby
+    Default: "nodejs8.11.0"
+  
+  Changelog:
+    Description: A description of all the changes made in this stack. This is required for the template to update.
+    Type: String
+    Default: Initial
+
+Mappings:
+
+# As of 04/04/19, all of the current builds are supported by the standard codebuild image.
+# This mapping may be used in the future should the someone decide to add support for more languages.
+  CodeBuildImageMap:
+    golang:
+      "DockerImage": "aws/codebuild/standard:1.0"
+    java:
+      "DockerImage": "aws/codebuild/standard:1.0"
+    nodejs8.11.0:
+      "DockerImage": "aws/codebuild/standard:1.0"
+    nodejs10.14.1:
+      "DockerImage": "aws/codebuild/standard:1.0"
+    python:
+      "DockerImage": "aws/codebuild/standard:1.0"
+    ruby:
+      "DockerImage": "aws/codebuild/standard:1.0"
+
+Resources:
+  # Pipeline notification SNS topic
+
+  DeploymentUpdatesTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: !Ref NotificationEmail
+          Protocol: "email"
+      TopicName: "DeploymentUpdates"
+
+  # CodeBuild project and resources (S3 Bucket for build artifacts, Role, Project)
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - "sts:AssumeRole"
+            Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+      Path: /codebuild/
+      Policies:
+        - PolicyName: !Sub CodeBuildAccess${ProjectName}${ServiceName}
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Resource: "*"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+              - Effect: Allow
+                Resource:
+                  - !Sub "arn:aws:s3:::${BuildArtifactsBucket}/*"
+                  - !Sub "arn:aws:s3:::${BuildArtifactsBucket}"
+                  - !Sub "arn:aws:s3:::${DevDocsBucket}/*"
+                  - !Sub "arn:aws:s3:::${DevDocsBucket}"
+                  - !Sub "arn:aws:s3:::${StageDocsBucket}/*"
+                  - !Sub "arn:aws:s3:::${StageDocsBucket}"
+                Action:
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:PutObject"
+                  - "s3:List*"
+              - Effect: Allow
+                Resource: "*"
+                Action:
+                  - "ssm:GetParametersByPath"
+                  - "ssm:GetParameters"
+                  - "ssm:GetParameter"
+                  - "serverlessrepo:*"
+
+  ProductionCodeBuild: 
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}${ServiceName}ProductionBuild"
+      Description: Build project for the production service
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image:
+          !FindInMap [CodeBuildImageMap, !Ref BuildFramework, "DockerImage"]
+        EnvironmentVariables:
+          - Name: BUILD_OUTPUT_BUCKET
+            Value: !Ref BuildArtifactsBucket
+          - Name: SERVICE
+            Value: !Ref ServiceName
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Source:
+        Type: CODEPIPELINE
+
+  TestCodeBuild: 
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}${ServiceName}TestingBuild"
+      Description: Build project for the production service
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image:
+          !FindInMap [CodeBuildImageMap, !Ref BuildFramework, "DockerImage"]
+        EnvironmentVariables:
+          - Name: BUILD_OUTPUT_BUCKET
+            Value: !Ref BuildArtifactsBucket
+          - Name: DOCS_BUCKET
+            Value: !Ref StageDocsBucket
+          - Name: SERVICE
+            Value: !Ref ServiceName
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Source:
+        Type: CODEPIPELINE
+
+  StageCodeBuild: 
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}${ServiceName}StagingBuild"
+      Description: Build project for the production service
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image:
+          !FindInMap [CodeBuildImageMap, !Ref BuildFramework, "DockerImage"]
+        EnvironmentVariables:
+          - Name: BUILD_OUTPUT_BUCKET
+            Value: !Ref BuildArtifactsBucket
+          - Name: SERVICE
+            Value: !Ref ServiceName
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Source:
+        Type: CODEPIPELINE
+
+  DevelopCodeBuild: 
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}${ServiceName}DevelopBuild"
+      Description: Build project for the develop user profile service
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: !Ref CodeBuildComputeType
+        Image: 
+          !FindInMap [CodeBuildImageMap, !Ref BuildFramework, "DockerImage"]
+        EnvironmentVariables:
+          - Name: BUILD_OUTPUT_BUCKET
+            Value: !Ref BuildArtifactsBucket
+          - Name: DOCS_BUCKET
+            Value: !Ref DevDocsBucket
+          - Name: SERVICE
+            Value: !Ref ServiceName
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Source:
+        Type: CODEPIPELINE
+
+  # CodePipeline definition and required roles
+  CFNPipelinePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: CloudFormation Pipeline Execution Policy. This is used by CodePipeline to run Cloudformation templates for the Lambda Deployment, access codebuild applications, and publish SNS notifications.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "cloudformation:CreateStack"
+              - "cloudformation:DescribeStacks"
+              - "cloudformation:DeleteStack"
+              - "cloudformation:UpdateStack"
+              - "cloudformation:CreateChangeSet"
+              - "cloudformation:ExecuteChangeSet"
+              - "cloudformation:DeleteChangeSet"
+              - "cloudformation:DescribeChangeSet"
+              - "cloudformation:SetStackPolicy"
+              - "cloudformation:SetStackPolicy"
+              - "cloudformation:ValidateTemplate"
+              - "codebuild:StartBuild"
+              - "codebuild:BatchGetBuilds"
+              - "codecommit:Get*"
+              - "sns:Publish"
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - "codecommit:GetBranch"
+              - "codecommit:GetCommit"
+              - "codecommit:UploadArchive"
+              - "codecommit:GetUploadArchiveStatus"
+              - "codecommit:CancelUploadArchive"
+            Resource: !Sub "arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${GitRepo}"
+          - Effect: Allow
+            Action:
+              - "s3:PutObject"
+              - "s3:Get*"
+              - "s3:ListBucket"
+            Resource: !Sub "arn:aws:s3:::${BuildArtifactsBucket}/*"
+
+  PipelineExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - "sts:AssumeRole"
+            Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+      Path: /pipelines/
+      ManagedPolicyArns:
+        - !Ref CFNPipelinePolicy
+      Policies:
+        - PolicyName: CodePipelineAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - "iam:PassRole"
+                Effect: Allow
+                Resource: "*"
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Location: !Ref BuildArtifactsBucket
+        Type: S3
+      Name: !Sub ${ProjectName}${ServiceName}_pipeline
+      RoleArn: !GetAtt PipelineExecutionRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: !Sub ${ServiceName}Production
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: "1"
+              Configuration:
+                RepositoryName: !Sub "${GitRepo}"
+                BranchName: !Ref MasterBranchName
+              OutputArtifacts:
+                - Name: !Sub ${ServiceName}ProdSourceZip
+              RunOrder: 1
+            - Name: !Sub ${ServiceName}Develop
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: "1"
+              Configuration:
+                RepositoryName: !Sub "${GitRepo}"
+                BranchName: !Ref DevelopBranchName
+              OutputArtifacts:
+                - Name: !Sub ${ServiceName}DevSourceZip
+              RunOrder: 1
+            - Name: !Sub ${ServiceName}Staging
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: "1"
+              Configuration:
+                RepositoryName: !Sub "${GitRepo}"
+                BranchName: !Ref StagingBranchName
+              OutputArtifacts:
+                - Name: !Sub ${ServiceName}StageSourceZip
+              RunOrder: 1
+            - Name: !Sub ${ServiceName}Testing
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: "1"
+              Configuration:
+                RepositoryName: !Sub "${GitRepo}"
+                BranchName: !Ref TestingBranchName
+              OutputArtifacts:
+                - Name: !Sub ${ServiceName}TestSourceZip
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: !Sub ${ServiceName}Production
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref ProductionCodeBuild
+              InputArtifacts:
+                - Name: !Sub ${ServiceName}ProdSourceZip
+              OutputArtifacts:
+                - Name: !Sub ${ServiceName}ProdBuiltZip
+            - Name: !Sub ${ServiceName}Staging
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref StageCodeBuild
+              InputArtifacts:
+                - Name: !Sub ${ServiceName}StageSourceZip
+              OutputArtifacts:
+                - Name: !Sub ${ServiceName}StageBuiltZip
+            - Name: !Sub ${ServiceName}Testing
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref TestCodeBuild
+              InputArtifacts:
+                - Name: !Sub ${ServiceName}TestSourceZip
+              OutputArtifacts:
+                - Name: !Sub ${ServiceName}TestBuiltZip
+            - Name: !Sub ${ServiceName}Develop
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref DevelopCodeBuild
+              InputArtifacts:
+                - Name: !Sub ${ServiceName}DevSourceZip
+              OutputArtifacts:
+                - Name: !Sub ${ServiceName}DevBuiltZip
+        - Name: Dev
+          Actions:
+            - Name: !Sub ${ServiceName}DevelopChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                RoleArn: !Ref PipelineDeployRole
+                StackName: !Sub "${ProjectName}${ServiceName}Develop-Stack-Stage"
+                ChangeSetName: !Sub "${ProjectName}${ServiceName}Develop-ChangeSet-Stage"
+                TemplatePath: !Sub ${ServiceName}DevBuiltZip::app-output_sam.yml
+                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                ParameterOverrides: !Sub '{ "Stage": "Dev", "ProjectName" : "${ProjectName}" }'
+              InputArtifacts:
+                - Name: !Sub ${ServiceName}DevBuiltZip
+              RunOrder: 1
+            - Name: !Sub ${ServiceName}DevelopDeploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                RoleArn: !Ref PipelineDeployRole
+                StackName: !Sub "${ProjectName}${ServiceName}Develop-Stack-Stage"
+                ChangeSetName: !Sub "${ProjectName}${ServiceName}Develop-ChangeSet-Stage"
+              OutputArtifacts:
+                - Name: !Sub "${ProjectName}${ServiceName}DevelopStageChangeSet"
+              RunOrder: 2
+        - Name: Test
+          Actions:
+            - Name: !Sub ${ServiceName}TestChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                RoleArn: !Ref PipelineDeployRole
+                StackName: !Sub "${ProjectName}${ServiceName}Test-Stack-Stage"
+                ChangeSetName: !Sub "${ProjectName}${ServiceName}Test-ChangeSet-Stage"
+                TemplatePath: !Sub ${ServiceName}TestBuiltZip::app-output_sam.yml
+                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                ParameterOverrides: !Sub '{ "Stage": "Test", "ProjectName" : "${ProjectName}" }'
+              InputArtifacts:
+                - Name: !Sub ${ServiceName}TestBuiltZip
+              RunOrder: 1
+            - Name: !Sub ${ServiceName}TestDeploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                RoleArn: !Ref PipelineDeployRole
+                StackName: !Sub "${ProjectName}${ServiceName}Test-Stack-Stage"
+                ChangeSetName: !Sub "${ProjectName}${ServiceName}Test-ChangeSet-Stage"
+              OutputArtifacts:
+                - Name: !Sub "${ProjectName}${ServiceName}TestStageChangeSet"
+              RunOrder: 2
+            - Name: DeploymentApproval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: "1"
+              Configuration:
+                ExternalEntityLink: "www.example.com"
+                CustomData: "The QA team must check this deployment for it to proceed to staging"
+                NotificationArn: !Ref DeploymentUpdatesTopic
+              RunOrder: 3
+        - Name: Stage
+          Actions:
+            - Name: !Sub ${ServiceName}StageChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                RoleArn: !Ref PipelineDeployRole
+                StackName: !Sub "${ProjectName}${ServiceName}Stage-Stack-Stage"
+                ChangeSetName: !Sub "${ProjectName}${ServiceName}Stage-ChangeSet-Stage"
+                TemplatePath: !Sub ${ServiceName}StageBuiltZip::app-output_sam.yml
+                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                ParameterOverrides: !Sub '{ "Stage": "Stage", "ProjectName" : "${ProjectName}" }'
+              InputArtifacts:
+                - Name: !Sub ${ServiceName}StageBuiltZip
+              RunOrder: 1
+            - Name: !Sub ${ServiceName}StageDeploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                RoleArn: !Ref PipelineDeployRole
+                StackName: !Sub "${ProjectName}${ServiceName}Stage-Stack-Stage"
+                ChangeSetName: !Sub "${ProjectName}${ServiceName}Stage-ChangeSet-Stage"
+              OutputArtifacts:
+                - Name: !Sub "${ProjectName}${ServiceName}StageStageChangeSet"
+              RunOrder: 2
+            - Name: DeploymentApproval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: "1"
+              Configuration:
+                ExternalEntityLink: "www.example.com"
+                CustomData: "The product team must check this deployment for it to proceed to production"
+                NotificationArn: !Ref DeploymentUpdatesTopic
+              RunOrder: 3
+        - Name: Prod
+          Actions:
+            - Name: CreateChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                RoleArn: !Ref PipelineDeployRole
+                StackName: !Sub "${ProjectName}${ServiceName}-Stack-Prod"
+                ChangeSetName: !Sub "${ProjectName}${ServiceName}-ChangeSet-Prod"
+                TemplatePath: !Sub ${ServiceName}ProdBuiltZip::app-output_sam.yml
+                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                ParameterOverrides: !Sub '{ "Stage": "Prod", "ProjectName" : "${ProjectName}" }'
+              InputArtifacts:
+                - Name: !Sub ${ServiceName}ProdBuiltZip
+              RunOrder: 1
+            - Name: ExecuteChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                RoleArn: !Ref PipelineDeployRole
+                StackName: !Sub "${ProjectName}${ServiceName}-Stack-Prod"
+                ChangeSetName: !Sub "${ProjectName}${ServiceName}-ChangeSet-Prod"
+              OutputArtifacts:
+                - Name: !Sub "${ProjectName}${ServiceName}ProdChangeSet"
+              RunOrder: 2
+
+Outputs:
+  Changelog:
+    Description: A description of all the changes made in this stack. This is required for the template to update.
+    Value: !Ref Changelog

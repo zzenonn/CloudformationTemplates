@@ -1,0 +1,892 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  This template contains a 
+  Codepipeline environment
+  that deploys to an S3 bucket
+
+# This template creates:
+#   Code Build Project
+#   Codepipeline
+#   IAM Role for Pipeline execution
+
+# This template creates:
+#   Code Build Project
+#   Codepipeline
+#   IAM Role for Pipeline execution
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: General Details
+        Parameters:
+          - ProjectName
+          - StageDocsBucket
+          - DevDocsBucket
+          - BuildArtifactsBucket
+      - Label:
+          default: Website Configuration
+        Parameters:
+          - DomainName
+          - DomainNameHostedZone
+          - AcmCertificateArn
+      - Label:
+          default: Infrastructure Pipeline Configuration
+        Parameters:
+          - ServiceName
+          - PipelineDeployRole
+          - GitRepo
+          - GitOwner
+          - MasterBranchName
+          - StagingBranchName
+          - TestingBranchName
+          - DevelopBranchName
+          - GitOAuthToken
+          - NotificationEmail
+          - CodeBuildComputeType
+          - BuildFramework
+
+    ParameterLabels:
+      ProjectName:
+        default: "Project Name"
+      ServiceName:
+        default: "Service Name"
+      PipelineDeployRole:
+        default: "Pipeline's Deploy Role"
+      GitRepo:
+        default: "Pipeline's Git Repository"
+      GitOwner:
+        default: "Git Owner"
+      NotificationEmail:
+        default: "Email for Deployment Notifications"
+      MasterBranchName:
+        default: "Git Branch for production"
+      StagingBranchName:
+        default: "Git branch for staging"
+      TestingBranchName:
+        default: "Git branch for testing"
+      DevelopBranchName:
+        default: "Git Branch for develop"
+      DomainName:
+        default: "Website Domain"
+      DomainNameHostedZone:
+        default: "Website Domain Hosted Zone"
+      AcmCertificateArn:
+        default: ARN for your ACM Certificate
+      GitOAuthToken:
+        default: "Git OAuth Token"
+      BuildFramework:
+        default: "Programming language or framework"
+      CodeBuildComputeType:
+        default: "Codebuild Environment Compute Type"
+
+Parameters:
+  # So that the pipeline can be used in other projects
+  ProjectName:
+    Description: Project Name to identify stack and infrastructure
+    Type: String
+
+  AcmCertificateArn:
+    Description: Certificate your website will use. It must be in the N. Virginia Region
+    Type: String
+
+  ServiceName:
+    Description: Service Name to identify stack and infrastructure
+    Type: String
+
+  BuildArtifactsBucket:
+    Description: Bucket for build artifacts
+    Type: String
+
+  PipelineDeployRole:
+    Type: String
+    Description: ARN of IAM Role to use for Deploy Stage
+
+  DomainName:
+    Type: String
+    Description: Hosted zone for this service (eg. example.com)
+
+  # This will create 4 record sets under this name with the format
+  # {stage}{service}.example.com (eg. testprofile.example.com)
+  DomainNameHostedZone:
+    Type: String
+    Description: Hosted zone for this service (eg. Z2R8MGQA73YKRV)
+
+  GitRepo:
+    Type: String
+    Description: Git Repository where CloudFormation templates are stored
+
+  GitOwner:
+    Type: String
+    Description: Owner of Git Repository
+
+  MasterBranchName:
+    Description: Enter the GitHub branch to monitored
+    Type: String
+    Default: master
+
+  StagingBranchName:
+    Description: Enter Git branch to be monitored
+    Type: String
+    Default: staging
+
+  TestingBranchName:
+    Description: Enter Git branch to be monitored
+    Type: String
+    Default: testing
+
+  DevelopBranchName:
+    Description: Enter the GitHub branch to monitored
+    Type: String
+    Default: develop
+
+  GitOAuthToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+
+  NotificationEmail:
+    Type: String
+    AllowedPattern: "^[\\x20-\\x45]?[\\w-\\+]+(\\.[\\w]+)*@[\\w-]+(\\.[\\w]+)*(\\.[a-z]{2,})$"
+    ConstraintDescription: "Must be a valid email address"
+    Description: Email for deployment updates
+
+  DevDocsBucket:
+    Type: String
+    Description: Bucket for all the docs
+
+  StageDocsBucket:
+    Type: String
+    Description: Bucket for all the docs
+
+  CodeBuildComputeType:
+    Description: "Codebuild Compute Type"
+    Type: String
+    AllowedValues:
+      - BUILD_GENERAL1_SMALL
+      - BUILD_GENERAL1_MEDIUM
+      - BUILD_GENERAL1_LARGE
+    Default: BUILD_GENERAL1_SMALL
+
+  BuildFramework:
+    Type: String
+    AllowedValues:
+      - golang
+      - java
+      - nodejs8.11.0
+      - nodejs10.14.1
+      - python
+      - ruby
+    Default: "nodejs8.11.0"
+  
+  Changelog:
+    Description: A description of all the changes made in this stack. This is required for the template to update.
+    Type: String
+    Default: Initial
+
+Mappings:
+
+# As of 04/04/19, all of the current builds are supported by the standard codebuild image.
+# This mapping may be used in the future should the someone decide to add support for more languages.
+  CodeBuildImageMap:
+    golang:
+      "DockerImage": "aws/codebuild/standard:1.0"
+    java:
+      "DockerImage": "aws/codebuild/standard:1.0"
+    nodejs8.11.0:
+      "DockerImage": "aws/codebuild/standard:1.0"
+    nodejs10.14.1:
+      "DockerImage": "aws/codebuild/standard:1.0"
+    python:
+      "DockerImage": "aws/codebuild/standard:1.0"
+    ruby:
+      "DockerImage": "aws/codebuild/standard:1.0"
+
+Resources:
+
+# S3 buckets
+
+  DevBucket:
+    Type: AWS::S3::Bucket
+
+  TestBucket:
+    Type: AWS::S3::Bucket
+
+  StageBucket:
+    Type: AWS::S3::Bucket
+
+  ProdBucket:
+    Type: AWS::S3::Bucket
+
+# Cloudfront orgin access identities
+  DevOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: OAI for dev bucket
+
+  TestOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: OAI for test bucket
+
+  StageOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: OAI for stage bucket
+
+  ProdOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: OAI for prod bucket
+
+# Bucket policies
+  DevBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      PolicyDocument:
+        Id: StageBucketPolicy
+        Version: 2012-10-17
+        Statement:
+          - Sid: PublicReadForGetBucketObjects
+            Effect: Allow
+            Principal: 
+              AWS: !Sub 'arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${DevOriginAccessIdentity}'
+            Action: 's3:GetObject'
+            Resource: !Sub arn:aws:s3:::${DevBucket}/*
+      Bucket: !Ref DevBucket
+
+  TestBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      PolicyDocument:
+        Id: StageBucketPolicy
+        Version: 2012-10-17
+        Statement:
+          - Sid: PublicReadForGetBucketObjects
+            Effect: Allow
+            Principal: 
+              AWS: !Sub 'arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${TestOriginAccessIdentity}'
+            Action: 's3:GetObject'
+            Resource: !Sub arn:aws:s3:::${TestBucket}/*
+      Bucket: !Ref TestBucket
+
+  StageBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      PolicyDocument:
+        Id: StageBucketPolicy
+        Version: 2012-10-17
+        Statement:
+          - Sid: PublicReadForGetBucketObjects
+            Effect: Allow
+            Principal: 
+              AWS: !Sub 'arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${StageOriginAccessIdentity}'
+            Action: 's3:GetObject'
+            Resource: !Sub arn:aws:s3:::${StageBucket}/*
+      Bucket: !Ref StageBucket
+
+  ProdBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      PolicyDocument:
+        Id: StageBucketPolicy
+        Version: 2012-10-17
+        Statement:
+          - Sid: PublicReadForGetBucketObjects
+            Effect: Allow
+            Principal: 
+              AWS: !Sub 'arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${ProdOriginAccessIdentity}'
+            Action: 's3:GetObject'
+            Resource: !Sub arn:aws:s3:::${ProdBucket}/*
+      Bucket: !Ref ProdBucket
+
+# Cloudfront distributions
+
+  DevCloudFront:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig: 
+        Aliases: 
+          - !Sub dev${DomainName}
+        DefaultRootObject: index.html
+        Enabled: true
+        Origins: 
+          - S3OriginConfig:
+              OriginAccessIdentity: !Sub origin-access-identity/cloudfront/${DevOriginAccessIdentity}
+            DomainName: !GetAtt DevBucket.DomainName
+            Id: DevS3Origin
+        ViewerCertificate: 
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+        DefaultCacheBehavior: 
+          ForwardedValues: 
+            QueryString: false
+          DefaultTTL: 0
+          MinTTL: 0
+          MaxTTL: 31536000
+          TargetOriginId: DevS3Origin
+          ViewerProtocolPolicy: redirect-to-https
+        CustomErrorResponses:
+          - ErrorCachingMinTTL: 600
+            ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCachingMinTTL: 600
+            ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          
+  TestCloudFront:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig: 
+        Aliases: 
+          - !Sub test${DomainName}
+        DefaultRootObject: index.html
+        Enabled: true
+        Origins: 
+          - S3OriginConfig:
+              OriginAccessIdentity: !Sub origin-access-identity/cloudfront/${TestOriginAccessIdentity}
+            DomainName: !GetAtt TestBucket.DomainName
+            Id: TestS3Origin
+        ViewerCertificate: 
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+        DefaultCacheBehavior: 
+          ForwardedValues: 
+            QueryString: false
+          DefaultTTL: 0
+          MinTTL: 0
+          MaxTTL: 31536000
+          TargetOriginId: TestS3Origin
+          ViewerProtocolPolicy: redirect-to-https
+        CustomErrorResponses:
+          - ErrorCachingMinTTL: 600
+            ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCachingMinTTL: 600
+            ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+  StageCloudFront:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig: 
+        Aliases: 
+          - !Sub stage${DomainName}
+        DefaultRootObject: index.html
+        Enabled: true
+        Origins: 
+          - S3OriginConfig:
+              OriginAccessIdentity: !Sub origin-access-identity/cloudfront/${StageOriginAccessIdentity}
+            DomainName: !GetAtt StageBucket.DomainName
+            Id: StageS3Origin
+        ViewerCertificate: 
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+        DefaultCacheBehavior: 
+          ForwardedValues: 
+            QueryString: false
+          DefaultTTL: 0
+          MinTTL: 0
+          MaxTTL: 31536000
+          TargetOriginId: StageS3Origin
+          ViewerProtocolPolicy: redirect-to-https
+        CustomErrorResponses:
+          - ErrorCachingMinTTL: 600
+            ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCachingMinTTL: 600
+            ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+  ProdCloudFront:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig: 
+        Aliases: 
+          - !Sub prod${DomainName}
+        DefaultRootObject: index.html
+        Enabled: true
+        Origins: 
+          - S3OriginConfig:
+              OriginAccessIdentity: !Sub origin-access-identity/cloudfront/${ProdOriginAccessIdentity}
+            DomainName: !GetAtt ProdBucket.DomainName
+            Id: ProdS3Origin
+        ViewerCertificate: 
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+        DefaultCacheBehavior: 
+          ForwardedValues: 
+            QueryString: false
+          DefaultTTL: 0
+          MinTTL: 0
+          MaxTTL: 31536000
+          TargetOriginId: ProdS3Origin
+          ViewerProtocolPolicy: redirect-to-https
+        CustomErrorResponses:
+          - ErrorCachingMinTTL: 600
+            ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCachingMinTTL: 600
+            ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+# DNS records
+
+  DevDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref DomainNameHostedZone
+      Comment: DNS name for stagedocs.
+      Name: !Sub dev${DomainName}
+      Type: A
+      AliasTarget: 
+        DNSName: !GetAtt DevCloudFront.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2 # Must be hard coded. This represents cloudfront
+
+  TestDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref DomainNameHostedZone
+      Comment: DNS name for stagedocs.
+      Name: !Sub test${DomainName}
+      Type: A
+      AliasTarget: 
+        DNSName: !GetAtt TestCloudFront.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  StageDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref DomainNameHostedZone
+      Comment: DNS name for stagedocs.
+      Name: !Sub stage${DomainName}
+      Type: A
+      AliasTarget: 
+        DNSName: !GetAtt StageCloudFront.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  ProdDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref DomainNameHostedZone
+      Comment: DNS name for stagedocs.
+      Name: !Sub ${DomainName}
+      Type: A
+      AliasTarget: 
+        DNSName: !GetAtt ProdCloudFront.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  # CodeBuild project and resources (S3 Bucket for build artifacts, Role, Project)
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - "sts:AssumeRole"
+            Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+      Path: /
+      Policies:
+        - PolicyName: !Sub CodeBuildAccess${ProjectName}${ServiceName}
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Resource: "*"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+              - Effect: Allow
+                Resource:
+                  - !Sub "arn:aws:s3:::${BuildArtifactsBucket}/*"
+                  - !Sub "arn:aws:s3:::${BuildArtifactsBucket}"
+                  - !Sub "arn:aws:s3:::${DevDocsBucket}/*"
+                  - !Sub "arn:aws:s3:::${DevDocsBucket}"
+                  - !Sub "arn:aws:s3:::${StageDocsBucket}/*"
+                  - !Sub "arn:aws:s3:::${StageDocsBucket}"
+                Action:
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:PutObject"
+                  - "s3:List*"
+              - Effect: Allow
+                Resource: "*"
+                Action:
+                  - "ssm:GetParametersByPath"
+                  - "ssm:GetParameters"
+                  - "ssm:GetParameter"
+      RoleName: !Sub "CodeBuildAccessRole-${ProjectName}${ServiceName}-${AWS::Region}"
+
+  ProductionCodeBuild: 
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}${ServiceName}ProductionBuild"
+      Description: Build project for the production service
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: !Ref CodeBuildComputeType
+        Image:
+          !FindInMap [CodeBuildImageMap, !Ref BuildFramework, "DockerImage"]
+        EnvironmentVariables:
+          - Name: BUILD_OUTPUT_BUCKET
+            Value: !Ref BuildArtifactsBucket
+          - Name: SERVICE
+            Value: !Ref ServiceName
+          - Name: ENVIRONMENT
+            Value: Prod
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Source:
+        Type: CODEPIPELINE
+
+  TestCodeBuild: 
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}${ServiceName}TestingBuild"
+      Description: Build project for the production service
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: !Ref CodeBuildComputeType
+        Image:
+          !FindInMap [CodeBuildImageMap, !Ref BuildFramework, "DockerImage"]
+        EnvironmentVariables:
+          - Name: BUILD_OUTPUT_BUCKET
+            Value: !Ref BuildArtifactsBucket
+          - Name: DOCS_BUCKET
+            Value: !Ref StageDocsBucket
+          - Name: SERVICE
+            Value: !Ref ServiceName
+          - Name: ENVIRONMENT
+            Value: Test
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Source:
+        Type: CODEPIPELINE
+
+  StageCodeBuild: 
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}${ServiceName}StagingBuild"
+      Description: Build project for the production service
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: !Ref CodeBuildComputeType
+        Image:
+          !FindInMap [CodeBuildImageMap, !Ref BuildFramework, "DockerImage"]
+        EnvironmentVariables:
+          - Name: BUILD_OUTPUT_BUCKET
+            Value: !Ref BuildArtifactsBucket
+          - Name: SERVICE
+            Value: !Ref ServiceName
+          - Name: ENVIRONMENT
+            Value: Stage
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Source:
+        Type: CODEPIPELINE
+
+  DevelopCodeBuild: 
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}${ServiceName}DevelopBuild"
+      Description: Build project for the develop user profile service
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: !Ref CodeBuildComputeType
+        Image: 
+          !FindInMap [CodeBuildImageMap, !Ref BuildFramework, "DockerImage"]
+        EnvironmentVariables:
+          - Name: BUILD_OUTPUT_BUCKET
+            Value: !Ref BuildArtifactsBucket
+          - Name: DOCS_BUCKET
+            Value: !Ref DevDocsBucket
+          - Name: SERVICE
+            Value: !Ref ServiceName
+          - Name: ENVIRONMENT
+            Value: Develop
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Source:
+        Type: CODEPIPELINE
+
+  # CodePipeline definition and required roles
+  CFNPipelinePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: CloudFormation Pipeline Execution Policy. This is used by CodePipeline to run Cloudformation templates for the Lambda Deployment, access codebuild applications, and publish SNS notifications.
+      Path: "/"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "cloudformation:CreateStack"
+              - "cloudformation:DescribeStacks"
+              - "cloudformation:DeleteStack"
+              - "cloudformation:UpdateStack"
+              - "cloudformation:CreateChangeSet"
+              - "cloudformation:ExecuteChangeSet"
+              - "cloudformation:DeleteChangeSet"
+              - "cloudformation:DescribeChangeSet"
+              - "cloudformation:SetStackPolicy"
+              - "cloudformation:SetStackPolicy"
+              - "cloudformation:ValidateTemplate"
+              - "codebuild:StartBuild"
+              - "codebuild:BatchGetBuilds"
+              - "sns:Publish"
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - "s3:PutObject"
+              - "s3:Get*"
+              - "s3:ListBucket"
+            Resource: 
+              - !Sub "arn:aws:s3:::${BuildArtifactsBucket}/*"
+              - !Sub "arn:aws:s3:::${DevBucket}/*"
+              - !Sub "arn:aws:s3:::${TestBucket}/*"
+              - !Sub "arn:aws:s3:::${StageBucket}/*"
+              - !Sub "arn:aws:s3:::${ProdBucket}/*"
+
+  PipelineExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - "sts:AssumeRole"
+            Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+      Path: /
+      ManagedPolicyArns:
+        - !Ref CFNPipelinePolicy
+      Policies:
+        - PolicyName: CodePipelineAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - "iam:PassRole"
+                Effect: Allow
+                Resource: "*"
+      RoleName: !Sub "PipelineExecutionRole${ProjectName}${ServiceName}-${AWS::Region}"
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Location: !Ref BuildArtifactsBucket
+        Type: S3
+      Name: !Sub ${ProjectName}${ServiceName}_pipeline
+      RoleArn: !GetAtt PipelineExecutionRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: !Sub ${ServiceName}Production
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: "1"
+              Configuration:
+                Owner: !Ref GitOwner
+                Repo: !Sub "${GitRepo}"
+                Branch: !Ref MasterBranchName
+                OAuthToken: !Ref GitOAuthToken
+              OutputArtifacts:
+                - Name: !Sub ${ServiceName}ProdSourceZip
+              RunOrder: 1
+            - Name: !Sub ${ServiceName}Develop
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: "1"
+              Configuration:
+                Owner: !Ref GitOwner
+                Repo: !Sub "${GitRepo}"
+                Branch: !Ref DevelopBranchName
+                OAuthToken: !Ref GitOAuthToken
+              OutputArtifacts:
+                - Name: !Sub ${ServiceName}DevSourceZip
+              RunOrder: 1
+            - Name: !Sub ${ServiceName}Staging
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: "1"
+              Configuration:
+                Owner: !Ref GitOwner
+                Repo: !Sub "${GitRepo}"
+                Branch: !Ref StagingBranchName
+                OAuthToken: !Ref GitOAuthToken
+              OutputArtifacts:
+                - Name: !Sub ${ServiceName}StageSourceZip
+              RunOrder: 1
+            - Name: !Sub ${ServiceName}Testing
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: "1"
+              Configuration:
+                Owner: !Ref GitOwner
+                Repo: !Sub "${GitRepo}"
+                Branch: !Ref TestingBranchName
+                OAuthToken: !Ref GitOAuthToken
+              OutputArtifacts:
+                - Name: !Sub ${ServiceName}TestSourceZip
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: !Sub ${ServiceName}Production
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref ProductionCodeBuild
+              InputArtifacts:
+                - Name: !Sub ${ServiceName}ProdSourceZip
+              OutputArtifacts:
+                - Name: !Sub ${ServiceName}ProdBuiltZip
+            - Name: !Sub ${ServiceName}Staging
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref StageCodeBuild
+              InputArtifacts:
+                - Name: !Sub ${ServiceName}StageSourceZip
+              OutputArtifacts:
+                - Name: !Sub ${ServiceName}StageBuiltZip
+            - Name: !Sub ${ServiceName}Testing
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref TestCodeBuild
+              InputArtifacts:
+                - Name: !Sub ${ServiceName}TestSourceZip
+              OutputArtifacts:
+                - Name: !Sub ${ServiceName}TestBuiltZip
+            - Name: !Sub ${ServiceName}Develop
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref DevelopCodeBuild
+              InputArtifacts:
+                - Name: !Sub ${ServiceName}DevSourceZip
+              OutputArtifacts:
+                - Name: !Sub ${ServiceName}DevBuiltZip
+        - Name: Dev
+          Actions:
+            - Name: !Sub ${ServiceName}DevelopDeploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: S3
+                Version: "1"
+              Configuration:
+                BucketName: !Ref DevBucket
+                Extract: true
+              InputArtifacts:
+                - Name: !Sub ${ServiceName}DevBuiltZip
+              RunOrder: 1
+        - Name: Test
+          Actions:
+            - Name: !Sub ${ServiceName}TestDeploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: S3
+                Version: "1"
+              Configuration:
+                BucketName: !Ref TestBucket
+                Extract: true
+              InputArtifacts:
+                - Name: !Sub ${ServiceName}TestBuiltZip
+              RunOrder: 1
+            - Name: DeploymentApproval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: "1"
+              Configuration:
+                NotificationArn: !Ref SlackNotificationARN
+              RunOrder: 2
+        - Name: Stage
+          Actions:
+            - Name: !Sub ${ServiceName}StageDeploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: S3
+                Version: "1"
+              Configuration:
+                BucketName: !Ref StageBucket
+                Extract: true
+              InputArtifacts:
+                - Name: !Sub ${ServiceName}StageBuiltZip
+              RunOrder: 1
+            - Name: DeploymentApproval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: "1"
+              Configuration:
+                NotificationArn: !Ref SlackNotificationARN
+              RunOrder: 2
+        - Name: Prod
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: S3
+                Version: "1"
+              Configuration:
+                BucketName: !Ref ProdBucket
+                Extract: true
+              InputArtifacts:
+                - Name: !Sub ${ServiceName}ProdBuiltZip
+              RunOrder: 1
+
+Outputs:
+  Changelog:
+    Description: A description of all the changes made in this stack. This is required for the template to update.
+    Value: !Ref Changelog

@@ -1,0 +1,185 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  This template is for provisioning of
+  any resource that uses instances such as
+  EC2 and RDS
+Parameters:
+  ProjectName:
+    Description: Project Name to identify stack and infrastructure
+    Type: String
+  Environment:
+    Description: Environment to deploy the Stack
+    Type: String
+    AllowedValues:
+      - Stage
+      - Prod
+      - Test
+      - Dev
+  Changelog:
+    Description: Changes made to this stack
+    Type: String
+    Default: Initial
+
+  LatestAmazonLinuxAmiId:
+    Type : 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+
+Conditions:
+  ProductionEnvironment:
+    !Equals [!Ref Environment, Prod]
+
+Resources:
+
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${ProjectName}-${Environment}-KYCDBSG
+      GroupDescription: Allow postgres access only from within the security group
+      VpcId:
+        Fn::ImportValue:
+          !Sub ${ProjectName}-${Environment}-Vpc
+
+  SGDbIngress1:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref DbSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref DbSecurityGroup
+
+  SGDbIngress2:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref DbSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432 
+      SourceSecurityGroupId:
+        Fn::ImportValue:
+          !Sub ${ProjectName}-${Environment}-LambdaSecurityGroup
+
+  Database:
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      AllocatedStorage: !If [ProductionEnvironment, "800", "100"]
+      BackupRetentionPeriod: !If [ProductionEnvironment, 30, 7]
+      DBInstanceClass: !If [ProductionEnvironment, "db.t3.large", "db.t3.small"]  
+      DBInstanceIdentifier: !Sub ${ProjectName}-${Environment}-Db
+      DBName: demo
+      DBSubnetGroupName:
+        Fn::ImportValue:
+          !Sub ${ProjectName}-${Environment}-DbSubnetGroup
+      Engine: postgres
+      Iops: !If [ProductionEnvironment, 1000, 0]  
+      MasterUsername: demo
+      MasterUserPassword: '{{resolve:ssm-secure:dbPassword:1}}'
+      MultiAZ: !If [ProductionEnvironment, true, false] 
+      Port: '5432'
+      PubliclyAccessible: false
+      StorageEncrypted: true
+      StorageType: !If [ProductionEnvironment, io1, standard]  
+      VPCSecurityGroups: 
+        - !Ref DbSecurityGroup
+
+  BastionRole:
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: !Sub /${ProjectName}/instances/
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+
+  BastionInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: 
+      Roles:
+        - !Ref BastionRole
+
+  BastionHost: 
+    Type: "AWS::EC2::Instance"
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          MongoThenNode:
+            - "mongodb"
+            - "devtools"
+        mongodb:
+          files:
+            /etc/yum.repos.d/mongodb-enterprise.repo:
+              content: |
+                [mongodb-enterprise]
+                name=MongoDB Enterprise Repository
+                baseurl=https://repo.mongodb.com/yum/amazon/2/mongodb-enterprise/4.0/$basearch/
+                gpgcheck=1
+                enabled=1
+                gpgkey=https://www.mongodb.org/static/pgp/server-4.0.asc
+              mode: "000644"
+              owner: "root"
+              group: "root"
+          commands:
+            updateRepo:
+              command: yum update -y
+            installMongo:
+              command: yum install mongodb-enterprise -y
+              test: test -e /etc/yum.repos.d/mongodb-enterprise.repo
+          services:
+            sysvinit:
+              mongod:
+                enabled: "true"
+                ensureRunning: "true"
+        devtools:
+          packages:
+            yum:
+              git: []
+              postgresql: []
+    Properties: 
+      ImageId: !Ref LatestAmazonLinuxAmiId
+      InstanceType: t3.micro
+      NetworkInterfaces: 
+        - AssociatePublicIpAddress: false
+          DeviceIndex: "0"
+          GroupSet: 
+            - Fn::ImportValue:
+                !Sub ${ProjectName}-${Environment}-LambdaSecurityGroup
+          SubnetId: !Select
+            - 1
+            - !Split
+              - ","
+              - Fn::ImportValue:
+                  !Sub ${ProjectName}-${Environment}-PrivateSubnets
+          DeleteOnTermination: true
+      IamInstanceProfile: !Ref BastionInstanceProfile
+      Tags:
+        - Key: Name
+          Value: !Sub ${Environment}Bastion
+        - Key: Environment
+          Value: !Sub ${Environment}
+      UserData:
+        Fn::Base64: !Sub |
+            #!/bin/bash -xe
+            yum update -y
+            # Install the files and packages from the metadata
+            /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource BastionHost --configsets MongoThenNode --region ${AWS::Region}
+            # Signal the status from cfn-init
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource BastionHost --region ${AWS::Region}
+            
+
+Outputs:
+
+  DatabaseEndpoint:
+    Value: !GetAtt Database.Endpoint.Address
+    Export: 
+      Name: !Sub ${ProjectName}-${Environment}-DatabaseEndpoint
+  
+  Changelog:
+    Value: !Ref Changelog
+    Description: Describe changes to this stack
