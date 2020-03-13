@@ -46,3 +46,5 @@ artifacts:
 
 - The build environment uploads its output to an Amazon S3 bucket
 
+- Approval 
+  - Approval, originally meant for slack, now defaults to email via SNS.
