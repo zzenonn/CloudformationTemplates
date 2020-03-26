@@ -141,6 +141,10 @@ Resources:
             yum:
               git: []
               postgresql: []
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT15M
     Properties: 
       ImageId: !Ref LatestAmazonLinuxAmiId
       InstanceType: t3.micro
