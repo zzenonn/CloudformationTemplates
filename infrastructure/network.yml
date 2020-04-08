@@ -274,7 +274,7 @@ Resources:
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: !Sub ${ProjectName}-${Environment}-PublicRoute1
+          Value: !Sub ${ProjectName}-${Environment}-PublicRoute
 
   PublicDefaultRoute:
     Type: AWS::EC2::Route
@@ -371,7 +371,7 @@ Resources:
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: !Join ["-", [!Ref VPC, "DB-Route"]]
+          Value: !Sub ${ProjectName}-${Environment}-DB-Route
 
   DBSubnet1RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
