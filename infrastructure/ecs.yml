@@ -1,0 +1,246 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  This template is for provisioning of
+  any resource that uses instances such as
+  EC2 and RDS
+Parameters:
+  ProjectName:
+    Description: Project Name to identify stack and infrastructure
+    Type: String
+  Environment:
+    Description: Environment to deploy the Stack
+    Type: String
+    AllowedValues:
+      - Stage
+      - Prod
+      - Test
+      - Dev
+  Changelog:
+    Description: Changes made to this stack
+    Type: String
+    Default: Initial
+
+  LatestAmazonLinuxEcsAmiId:
+    Type : 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id'
+
+Conditions:
+  ProductionEnvironment:
+    !Equals [!Ref Environment, Prod]
+    
+Resources:
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${ProjectName}-${Environment}-AlbSg
+      GroupDescription: Allow http access only from anywhere on 80 and 8080
+      VpcId:
+        Fn::ImportValue:
+          !Sub ${ProjectName}-${Environment}-Vpc
+
+  SGAlbIngress1:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref AlbSecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      CidrIp: "0.0.0.0/0"
+
+  SGAlbIngress2:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref AlbSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      CidrIp: "0.0.0.0/0"
+      
+  ContainerInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${ProjectName}-${Environment}-AlbSg
+      GroupDescription: Allow http access only from the ALB to port 80.
+      VpcId:
+        Fn::ImportValue:
+          !Sub ${ProjectName}-${Environment}-Vpc
+
+  SGContainerInstanceSgIngress1:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref ContainerInstanceSecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      CidrIp: !Ref AlbSecurityGroup
+      
+  ContainerInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: ec2.amazonaws.com
+          Action: sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+      Policies:
+      - PolicyName: ecs-service
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - ssmmessages:*
+              - ssm:UpdateInstanceInformation
+              - ec2messages:*
+              - ecs:DiscoverPollEndpoint
+              - ecs:Submit*
+              - ecs:Poll
+              - ecs:StartTelemetrySession
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: '*'
+            
+            
+  ContainerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: 
+      Roles:
+        - !Ref ContainerInstanceRole
+            
+  EcsLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          commands:
+            050_add_instance_to_cluster:
+              command: !Sub 'echo ECS_CLUSTER=${ProjectName}-${Environment}-EcsCluster >> /etc/ecs/ecs.config'
+    Properties:
+      ImageId: !Ref LatestAmazonLinuxEcsAmiId
+      InstanceType: t2.medium
+      UserData: 
+        Fn::Base64: !Sub |
+            #!/bin/bash -xe
+            yum update -y
+            # Install the files and packages from the metadata
+            /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource EcsLaunchConfig --region ${AWS::Region}
+            # Signal the status from cfn-init
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource ContainerInstanceAutoScalingGroup --region ${AWS::Region}
+      SecurityGroups:
+        - !Ref ContainerInstanceSecurityGroup
+      IamInstanceProfile: !Ref ContainerInstanceProfile
+          
+  EcsAsgSns:
+    Type: "AWS::SNS::Topic"
+    
+  ContainerInstanceAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT15M
+    Properties:
+      VPCZoneIdentifier:
+        - !Select
+            - 0
+            - !Split
+              - ","
+              - Fn::ImportValue:
+                  !Sub ${ProjectName}-${Environment}-PrivateSubnets
+        - !Select
+            - 1
+            - !Split
+              - ","
+              - Fn::ImportValue:
+                  !Sub ${ProjectName}-${Environment}-PrivateSubnets
+        - !Select
+            - 2
+            - !Split
+              - ","
+              - Fn::ImportValue:
+                  !Sub ${ProjectName}-${Environment}-PrivateSubnets
+      LaunchConfigurationName: !Ref 'EcsLaunchConfig'
+      NotificationConfigurations:
+      - TopicARN: !Ref EcsAsgSns
+        NotificationTypes:
+        - autoscaling:EC2_INSTANCE_LAUNCH
+        - autoscaling:EC2_INSTANCE_LAUNCH_ERROR
+        - autoscaling:EC2_INSTANCE_TERMINATE
+        - autoscaling:EC2_INSTANCE_TERMINATE_ERROR
+      MinSize: '1'
+      MaxSize: '5'
+      Tags:
+      - Key: Name
+        Value: !Sub ${ProjectName}-${Environment}-ECSContainerInstance
+        PropagateAtLaunch: true
+      DesiredCapacity: '1'
+          
+  EcsCluster:
+    Type: 'AWS::ECS::Cluster'
+    Properties:
+      ClusterName: !Sub ${ProjectName}-${Environment}-EcsCluster
+      ClusterSettings:
+        - Name: containerInsights
+          Value: !If [ProductionEnvironment, enabled, disabled]  
+      Tags:
+        - Key: ENV
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+  
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      LoadBalancerAttributes:
+      - Key: idle_timeout.timeout_seconds
+        Value: "50"
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref AlbSecurityGroup
+      Subnets:
+        - !Select
+            - 0
+            - !Split
+              - ","
+              - Fn::ImportValue:
+                  !Sub ${ProjectName}-${Environment}-PublicSubnets
+        - !Select
+            - 1
+            - !Split
+              - ","
+              - Fn::ImportValue:
+                  !Sub ${ProjectName}-${Environment}-PublicSubnets
+        - !Select
+            - 2
+            - !Split
+              - ","
+              - Fn::ImportValue:
+                  !Sub ${ProjectName}-${Environment}-PublicSubnets
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-ALB
+          
+Outputs:
+
+  EcsCluster:
+    Value: !Ref EcsCluster
+    Export: 
+      Name: !Sub ${ProjectName}-${Environment}-ALB
+  
+  ApplicationLoadBalancer:
+    Value: !Ref ApplicationLoadBalancer
+    Export: 
+      Name: !Sub ${ProjectName}-${Environment}-EcsCluster
+      
+  ContainerInstanceSecurityGroup:
+    Value: !Ref ContainerInstanceSecurityGroup
+    Export: 
+      Name: !Sub ${ProjectName}-${Environment}-ContainerInstanceSecurityGroup
+  
+  Changelog:
+    Value: !Ref Changelog
+    Description: Describe changes to this stack

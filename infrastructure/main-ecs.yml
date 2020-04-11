@@ -1,0 +1,56 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Parameters:
+  ProjectName:
+    Description: Project Name to identify stack and infrastructure
+    Type: String
+  Environment:
+    Description: Environment to deploy the Stack
+    Type: String
+    AllowedValues:
+      - Stage
+      - Prod
+      - Test
+      - Dev
+  CidrBlock:
+    Description: The primary CIDR Block for your VPC
+    Type: String
+    AllowedPattern: '((\d{1,3})\.){3}\d{1,3}/\d{1,2}'
+    Default: 10.0.0.0/16
+    ConstraintDescription: Invalid CIDR Block
+  CidrBits:
+    Description: The number of subnet bits for the CIDR. For example, specifying a value "8" for this parameter will create a CIDR with a mask of "/24".
+    Type: Number
+    Default: 8
+    MinValue: 2
+    MaxValue: 16
+    ConstraintDescription: Invalid CIDR Bits
+  OfficeIp:
+    Type: String
+    Default: "103.104.16.78/32"
+    AllowedPattern: '((\d{1,3})\.){3}\d{1,3}/\d{1,2}'
+  Changelog:
+    Type: String
+    Default: "Initial"
+
+Resources: 
+  NetworkingStack: 
+    Type: AWS::CloudFormation::Stack
+    Properties: 
+      TemplateURL: "https://zenon-cloudformation.s3-ap-southeast-1.amazonaws.com/network.yml"
+      Parameters: 
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+        CidrBlock: !Ref CidrBlock
+        CidrBits: !Ref CidrBits
+        OfficeIp: !Ref OfficeIp
+        Changelog: !Ref Changelog
+  
+  EcsStack: 
+    Type: AWS::CloudFormation::Stack
+    DependsOn: NetworkingStack
+    Properties: 
+      TemplateURL: "https://zenon-cloudformation.s3-ap-southeast-1.amazonaws.com/ecs.yml"
+      Parameters: 
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+        Changelog: !Ref Changelog
