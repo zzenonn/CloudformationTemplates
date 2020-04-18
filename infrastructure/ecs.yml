@@ -60,7 +60,7 @@ Resources:
   ContainerInstanceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupName: !Sub ${ProjectName}-${Environment}-AlbSg
+      GroupName: !Sub ${ProjectName}-${Environment}-ContainerInstanceSg
       GroupDescription: Allow http access only from the ALB to port 80.
       VpcId:
         Fn::ImportValue:
@@ -73,7 +73,7 @@ Resources:
       IpProtocol: tcp
       FromPort: 80
       ToPort: 80
-      CidrIp: !Ref AlbSecurityGroup
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
       
   ContainerInstanceRole:
     Type: AWS::IAM::Role
@@ -84,7 +84,7 @@ Resources:
           Principal:
             Service: ec2.amazonaws.com
           Action: sts:AssumeRole
-      Path: /
+      Path: !Sub /${ProjectName}/${Environment}/
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
       Policies:
@@ -121,11 +121,12 @@ Resources:
               command: !Sub 'echo ECS_CLUSTER=${ProjectName}-${Environment}-EcsCluster >> /etc/ecs/ecs.config'
     Properties:
       ImageId: !Ref LatestAmazonLinuxEcsAmiId
-      InstanceType: t2.medium
+      InstanceType: !If [ProductionEnvironment, t3.medium, t3.micro] 
       UserData: 
         Fn::Base64: !Sub |
             #!/bin/bash -xe
             yum update -y
+            yum install -y aws-cfn-bootstrap
             # Install the files and packages from the metadata
             /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource EcsLaunchConfig --region ${AWS::Region}
             # Signal the status from cfn-init
@@ -139,6 +140,7 @@ Resources:
     
   ContainerInstanceAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: EcsCluster
     CreationPolicy:
       ResourceSignal:
         Count: 1
