@@ -271,32 +271,29 @@ Resources:
                 Effect: Allow
                 Resource: "*"
                 
-  CodedeployApp:
-    Type: AWS::CodeDeploy::Application
-    Properties: 
-      ApplicationName: !Sub "${ProjectName}${ServiceName}-${Environment}-ChangeSet"
-      ComputePlatform: ECS
+  # CodedeployApp:
+  #   Type: AWS::CodeDeploy::Application
+  #   Properties: 
+  #     ApplicationName: !Sub "${ProjectName}${ServiceName}-${Environment}-ChangeSet"
+  #     ComputePlatform: ECS
       
-  CodedeployDeploymentGroup:
-    Type: AWS::CodeDeploy::DeploymentGroup
-    Properties: 
-      ApplicationName: !Ref CodedeployApp
-      DeploymentConfigName: CodeDeployDefault.ECSCanary10percent5Minutes
-      DeploymentStyle: 
-        DeploymentStyle
-      Ec2TagFilters: 
-        - EC2TagFilter
-      Ec2TagSet: 
-        EC2TagSet
-      LoadBalancerInfo: 
-        LoadBalancerInfo
-      OnPremisesInstanceTagFilters: 
-        - TagFilter
-      OnPremisesTagSet: 
-        OnPremisesTagSet
-      ServiceRoleArn: String
-      TriggerConfigurations: 
-        - TriggerConfig
+  # CodedeployDeploymentGroup:
+  #   Type: AWS::CodeDeploy::DeploymentGroup
+  #   Properties: 
+  #     ApplicationName: !Ref CodedeployApp
+  #     DeploymentConfigName: CodeDeployDefault.ECSCanary10percent5Minutes
+  #     DeploymentStyle: 
+  #       DeploymentType: IN_PLACE
+  #       DeploymentOption: WITH_TRAFFIC_CONTROL
+  #     LoadBalancerInfo: 
+  #       LoadBalancerInfo
+  #     OnPremisesInstanceTagFilters: 
+  #       - TagFilter
+  #     OnPremisesTagSet: 
+  #       OnPremisesTagSet
+  #     ServiceRoleArn: String
+  #     TriggerConfigurations: 
+  #       - TriggerConfig
     
     
   Pipeline:
@@ -375,16 +372,13 @@ Resources:
               ActionTypeId:
                 Category: Deploy
                 Owner: AWS
-                Provider: CloudFormation
+                Provider: ECS
                 Version: "1"
               Configuration:
-                ActionMode: CHANGE_SET_REPLACE
-                RoleArn: !Ref PipelineDeployRole
-                StackName: !Sub "${ProjectName}${ServiceName}Test-Stack-Stage"
-                ChangeSetName: !Sub "${ProjectName}${ServiceName}Test-ChangeSet-Stage"
-                TemplatePath: !Sub ${ServiceName}TestBuiltZip::app-output_sam.yaml
-                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
-                ParameterOverrides: !Sub '{ "Stage": "Test", "ProjectName" : "${ProjectName}" }'
+                ClusterName: CHANGE_SET_REPLACE
+                ServiceName: !Ref ServiceName
+                FileName: !Sub "${ProjectName}${ServiceName}Test-Stack-Stage"
+                DeploymentTimeout: 15
               InputArtifacts:
                 - Name: !Sub ${ServiceName}TestBuiltZip
               RunOrder: 1
