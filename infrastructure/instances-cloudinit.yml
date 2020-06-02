@@ -20,6 +20,10 @@ Parameters:
     Type: String
     Default: Initial
 
+  Ec2KeyPair:
+    Description: Key pair used for this template
+    Type: AWS::EC2::KeyPair::KeyName
+
   LatestAmazonLinuxAmiId:
     Type : 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
     Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
@@ -148,6 +152,7 @@ Resources:
     Properties: 
       ImageId: !Ref LatestAmazonLinuxAmiId
       InstanceType: t3.micro
+      KeyName: !Ref Ec2KeyPair
       NetworkInterfaces: 
         - AssociatePublicIpAddress: false
           DeviceIndex: "0"
