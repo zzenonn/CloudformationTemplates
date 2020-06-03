@@ -36,7 +36,7 @@ Resources:
   NetworkingStack: 
     Type: AWS::CloudFormation::Stack
     Properties: 
-      TemplateURL: "https://zenon-cloudformation.s3-ap-southeast-1.amazonaws.com/network.yml"
+      TemplateURL: "https://zenon-cloudformation.s3-ap-southeast-1.amazonaws.com/infrastructure/network.yml"
       Parameters: 
         ProjectName: !Ref ProjectName
         Environment: !Ref Environment
@@ -49,7 +49,7 @@ Resources:
     Type: AWS::CloudFormation::Stack
     DependsOn: NetworkingStack
     Properties: 
-      TemplateURL: "https://zenon-cloudformation.s3-ap-southeast-1.amazonaws.com/instances-cloudinit.yml"
+      TemplateURL: "https://zenon-cloudformation.s3-ap-southeast-1.amazonaws.com/infrastructure/instances-cloudinit.yml"
       Parameters: 
         ProjectName: !Ref ProjectName
         Environment: !Ref Environment
